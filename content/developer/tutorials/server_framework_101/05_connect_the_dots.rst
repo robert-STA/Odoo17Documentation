@@ -6,12 +6,6 @@ In this chapter, we'll add business logic to the models to automate the processe
 and turn it into a dynamic and useful tool. This will involve defining actions, constraints,
 automatic computations, and other model methods.
 
-.. todo: explain the env (self.env.uid, self.env.user, self.env.ref(xml_id), self.env[model_name])
-.. todo: explain magic commands
-.. todo: 6,0,0 to associate tags to properties in data
-.. todo: create (create offer -> offer received state) and write methods
-.. todo: auto-update property state based on received offers state (write)
-
 .. _tutorials/server_framework_101/computed_fields:
 
 Automate field computations
@@ -95,6 +89,7 @@ that computed fields remain consistent.
 .. seealso::
    - :ref:`Reference documentation for computed fields <reference/fields/compute>`
    - :ref:`Reference documentation for recordsets <reference/orm/recordsets>`
+   - Reference documentation for the :meth:`@api.depends() <odoo.api.depends>` decorator
    - :ref:`Coding guidelines on naming and ordering the members of model classes
      <contributing/coding_guidelines/model_members>`
 
@@ -109,9 +104,9 @@ Let's implement them.
    - **Best Offer** (`real.estate.property`): The maximum amount of all offers.
 
    .. tip::
-      - Import the `odoo.tools.date_utils` package to simplify operations on `Date` fields.
       - Use the :meth:`mapped <odoo.models.Model.mapped>` method to extract a recordset's field
         values into a list.
+      - Import the `odoo.tools.date_utils` package to simplify operations on `Date` fields.
 
 .. spoiler:: Solution
 
@@ -178,6 +173,50 @@ Let's implement them.
           [...]
       </record>
 
+   .. code-block:: python
+      :caption: `real_estate_offer.py`
+      :emphasize-lines: 1-2,9,12-15
+
+      from odoo import api, fields, models
+      from odoo.tools import date_utils
+
+      class RealEstateOffer(models.Model):
+          [...]
+          validity = fields.Integer(
+              string="Validity", help="The number of days before the offer expires.", default=7
+          )
+          expiry_date = fields.Date(string="Expiry Date", compute='_compute_expiry_date')
+          [...]
+
+          @api.depends('date', 'validity')
+          def _compute_expiry_date(self):
+              for offer in self:
+                  offer.expiry_date = date_utils.add(offer.date, days=offer.validity)
+
+   .. code-block:: xml
+      :caption: `real_estate_offer_views.xml`
+      :emphasize-lines: 5,16
+
+      <record id="real_estate.offer_list" model="ir.ui.view">
+          [...]
+              <list>
+                  [...]
+                  <field name="expiry_date"/>
+                  <field name="state"/>
+              </list>
+          [...]
+      </record>
+
+      <record id="real_estate.offer_form" model="ir.ui.view">
+          [...]
+              <group>
+                  [...]
+                  <field name="validity"/>
+                  <field name="expiry_date"/>
+              </group>
+          [...]
+      </record>
+
 .. _tutorials/server_framework_101/inverse_methods:
 
 Make computed fields editable
@@ -193,10 +232,43 @@ To make a computed field editable, a Python method must be defined and linked to
 declaration using the `inverse` argument. This method specifies how updates to the computed field
 should be applied to its dependencies.
 
-.. seealso::
-   :ref:`Reference documentation for related fields <reference/fields/related>`
+.. example::
+   In the example below, an inverse method is added to the `margin` field.
 
-.. todo: inverse: offer deadline
+   .. code-block:: python
+
+      margin = fields.Float(
+          string="Profit Margin", compute='_compute_margin', inverse='_inverse_margin'
+      )
+
+      def _inverse_margin(self):
+          for product in self:
+              # As the cost is fixed, the sales price is increased to match the desired margin.
+              product.price = product.cost + product.margin
+
+Now that we have seen how inverse methods make computed fields editable, let's put this concept in
+practice.
+
+.. exercise::
+   Make the Expiry Date field editable on real estate offers.
+
+   .. tip::
+      You'll need to save the property form view to trigger the computation.
+
+.. spoiler:: Solution
+
+   .. code-block:: python
+      :caption: `real_estate_offer.py`
+      :emphasize-lines: 1-3,6-8
+
+      expiry_date = fields.Date(
+          string="Expiry Date", compute='_compute_expiry_date', inverse='_inverse_expiry_date'
+      )
+      [...]
+
+      def _inverse_expiry_date(self):
+          for offer in self:
+              offer.validity = date_utils.relativedelta(dt1=offer.expiry_date, dt2=offer.date).days
 
 .. _tutorials/server_framework_101/store_computed_fields:
 
@@ -220,9 +292,6 @@ large number of records.
 
 .. example::
    store `margin`
-
-.. seealso::
-   Reference documentation for the :meth:`@api.depends() <odoo.api.depends>` decorator
 
 .. _tutorials/server_framework_101/search_methods:
 
@@ -263,6 +332,9 @@ domain must be constructed using stored fields only.
               else:
                   raise NotImplementedError()
 
+.. todo: compute Stalled based on `today > availability date` -> search filter for stalled (below availability date)
+.. todo: compute Priority (star) == offer expires in <= 2 days -> search filter + groupby priority (separate group below for sale)
+
 .. _tutorials/server_framework_101/related_fields:
 
 Simplify related record access
@@ -281,7 +353,8 @@ argument, just like regular computed fields.
 .. seealso::
    :ref:`Reference documentation for related fields <reference/fields/related>`
 
-.. todo: related fields (buyer's phone)
+.. todo: related buyer's phone
+.. todo: related address's street depends=[partner_id]
 
 .. _tutorials/server_framework_101/onchanges:
 
@@ -301,14 +374,23 @@ the :code:`@api.onchange()` decorator. These methods are triggered when the spec
 are altered. They operate on the in-memory representation of a single-record recordset received
 through `self`. If field values are modified, the changes are automatically reflected in the UI.
 
+.. todo: explain the env (self.env.uid, self.env.user, self.env.ref(xml_id), self.env[model_name])
+
 .. seealso::
    - Reference documentation for the :meth:`@api.onchange() <odoo.api.onchange>` decorator
    - Reference documentation for the :class:`UserError <odoo.exceptions.UserError>` exception
 
+.. todo: tip ref translation
+
 .. todo: raise UserError + translation
-.. todo: if garden checked -> show total area
-.. todo: mention that the method is public so it can be called directly by the client.
-.. todo: always return something in public methods as they are part of the :ref:external API and can be called through XML-RPC
+.. todo: note: mention that the method is public so it can be called directly by the client.
+   always return something in public methods as they are part of the :ref:external API and can be called through XML-RPC
+
+.. exercise::
+   tmp
+
+.. todo: if garden unchecked -> set garden area to zero
+.. todo: if write in garden area -> set garden checked
 
 .. _tutorials/server_framework_101/constraints:
 
@@ -347,8 +429,9 @@ expression to validate, and the error message to display if the constraint is vi
    - `Reference documentation for PostgreSQL's constraints
      <https://www.postgresql.org/docs/current/ddl-constraints.html>`_
 
-.. todo: price more than zero
-.. todo: unique tag constraint
+.. todo: property price strictly positive
+.. todo: offer amount strictly positive
+.. todo: unique tag
 
 .. _tutorials/server_framework_101/python_constraints:
 
@@ -371,7 +454,10 @@ the constraint is violated.
    - Reference documentation for the :class:`ValidationError <odoo.exceptions.ValidationError>`
      exception
 
+.. todo: the offer amount must be at least 80% of the sales price
+.. todo: the availability date must be in less than 3 months
 .. todo: accept only one offer
+.. todo: new offers of given user must be more than offers (tip: filtered)
 
 .. _tutorials/server_framework_101/defaults:
 
@@ -388,9 +474,9 @@ as a model method or a lambda function. In both cases, the `self` argument provi
 environment but does not represent the current record, as no record exists yet during the creation
 process.
 
+.. todo: real.estate.offer.amount::default -> property.selling_price
 .. todo: salesperson_id = fields.Many2one(default=lambda self: self.env.user)
 .. todo: availability_date = fields.Date(default=lambda self: date_utils.add(fields.Date.today(), months=2))
-.. todo: real.estate.offer.amount::default -> property.selling_price (add related?)
 .. todo: real.estate.tag.color -> default=_default_color ;  def _default_color(self): return random.randint(1, 11)  (check if lambda works)
 .. todo: copy=False on some fields
 
@@ -404,11 +490,8 @@ buttons can be of type **action**, defined in XML, or **object**, implemented in
 Together, these types of buttons facilitate the integration of user interactions with business
 logic.
 
-.. todo: "assign myself as salesperson" action
-.. todo: "view best offer" statbutton
-.. todo: accept/refuse offer buttons
-.. todo: accepting offer refuses others
-.. todo: action name=...
+.. todo: def create of offer -> write state of the property to offer received
+.. todo: def unlink: _unlink_if_state_is_valid (new or cancelled)
 
 .. _tutorials/server_framework_101/action_type_actions:
 
@@ -430,6 +513,8 @@ attribute should reference the XML ID of the action to execute.
       <reference/view_architectures/form/button>` and :ref:`headers
       <reference/view_architectures/form/header>` in form views.
 
+.. todo: "view offers" statbutton with count + remove notebook page of offers
+
 .. _tutorials/server_framework_101/object_type_actions:
 
 Model-defined actions
@@ -443,6 +528,10 @@ To link a button to a model-defined action, its `type` attribute must be set to 
 `name` attribute must be set to the name of the model method to call when the button is clicked. The
 method receives the current recordset through `self` and should return a dictionary acting as an
 action descriptor.
+
+.. todo: accept/refuse offer buttons -> auto refuse others when accepting (write)
+.. todo: multi-checkbox refuse offers in bulk
+.. todo: "assign myself as salesperson" action
 
 ----
 
